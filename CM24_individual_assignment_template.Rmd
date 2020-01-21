@@ -1,0 +1,704 @@
+---
+title: "Individual Assignment: Data Analytics of AirBnB prices"
+author: "Andreea Bajenaru"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    highlight: zenburn
+    theme: flatly
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+    code_folding: show
+---
+
+
+```{r setup, include=FALSE}
+# leave this chunk alone
+options(knitr.table.format = "html") 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, 
+  comment = NA, dpi = 300)
+```
+
+
+```{r load-libraries, echo=FALSE}
+
+library(tidyverse) # the usual stuff: dplyr, readr, and other goodies
+library(lubridate) # to handle dates
+library(GGally) # for correlation-scatter plot matrix
+library(ggfortify) # to produce residual diagnostic plots
+library(rsample) # to split dataframe in training- & testing sets
+library(janitor) # clean_names()
+library(broom) # use broom:augment() to get tidy table with regression output, residuals, etc
+library(huxtable) # to get summary table of all models produced
+library(kableExtra) # for formatting tables
+library(moderndive) # for getting regression tables
+library(skimr) # for skim
+library(mosaic)
+library(leaflet) # for interactive HTML maps
+
+
+```
+
+
+
+
+In your individual assignment you have to analyse data about Airbnb listings. You can download the data, originally scraped from airbnb.com, from [insideairbnb.com](http://insideairbnb.com/get-the-data.html){target="_blank"}.
+
+**There are enough cities to choose from and you should work on a city you know or one that you have visited or want to visit.**
+
+All of the listings are a GZ file, namely they are archive files compressed by the standard GNU zip (gzip) compression algorithm. You can donwload, save and extract the file if you wanted, but `readr::read_csv()` can immediately read and extract this kind of a file. As an example, if you wanted to get the listings for Amsterdam, you can just type 
+
+
+```
+listings <- read_csv("http://data.insideairbnb.com/the-netherlands/north-holland/amsterdam/2019-12-07/data/listings.csv.gz") %>% 
+
+  clean_names() %>% 
+  
+  #drop variables that contain 'scrape' in their column name
+  select(- contains("scrape"))
+```
+The file you need to get is always the first one for each city, e.g., **Detailed Listings data for Amsterdam**
+
+
+```{r get_data, echo=FALSE}
+
+# assuming you want to work on Milan
+listings <- read_csv("http://data.insideairbnb.com/spain/andaluc%C3%ADa/malaga/2019-11-30/data/listings.csv.gz") %>% 
+  clean_names() %>% 
+  
+  
+  #drop variables that contain 'scrape' in their column name
+  select(- contains("scrape"))
+```
+
+
+Even though there are many variables in the dataframe, here is a quick description of some of the variables collected, with all cost data expressed in US$
+
+- `price` = cost per night 
+- `cleaning_fee`: cleaning fee 
+- `extra_people`: charge for having more than 1 person
+- `property_type`: type of accomodation (House, Apartment, etc.)
+- `room_type`:
+
+  - Entire home/apt (guests have entire place to themselves)
+  - Private room (Guests have private room to sleep, all other rooms shared)
+  - Shared room (Guests sleep in room shared with others)
+
+- `number_of_reviews`: Total number of reviews for the listing
+- `review_scores_rating`: Average review score (0 - 100)
+- `longitude` , `latitude`: geographical coordinates to help us locate the listing
+- `neighbourhood*`: three variables on a few major neighbourhoods in each city 
+- `host_response_time`:
+- `host_identity_verified`:
+
+
+# Exploratory Data Analysis (EDA)
+
+In the [R4DS Exploratory Data Analysis chapter](http://r4ds.had.co.nz/exploratory-data-analysis.html){target="_blank"}, the authors state:
+
+> "Your goal during EDA is to develop an understanding of your data. The easiest way to do this is to use questions as tools to guide your investigation...EDA is fundamentally a creative process. And like most creative processes, the key to asking quality questions is to generate a large quantity of questions."
+
+
+Conduct a thorough EDA. Recall that an EDA involves three things:
+
+* Looking at the raw values.
+    * `dplyr::glimpse()`
+* Computing summary statistics of the variables of interest, or finding NAs
+    * `mosaic::favstats()`
+    * `skimr::skim()`
+* Creating informative visualizations.
+    * `ggplot2::ggplot()`
+        * `geom_histogram()` or `geom_density()` for numeric continuous variables
+        * `geom_bar()` or `geom_col()` for categorical variables
+    * `GGally::ggpairs()` for scaterrlot/correlation matrix
+        * Note that you can add transparency to points/density plots in the `aes` call, for example: `aes(colour = gender, alpha = 0.4)`
+        
+You may wish to have a level 1 header (`#`) for your EDA, then use level 2 sub-headers (`##`) to make sure you cover all three EDA bases. **At a minimum** you should address these questions:
+
+- How many variables/columns? How many rows/observations?
+- Which variables are numbers?
+- Which are categorical or *factor* variables (numeric or character variables with variables that have a fixed and known set of possible values?
+- What are the correlations between variables? Does each scatterplot support a linear relationship between variables? Do any of the correlations appear to be conditional on the value of a categorical variable?
+
+At this stage, you may also find you want to use `filter`, `mutate`, `arrange`, `select`, or `count`. Let your questions lead you! 
+
+> In all cases, please think about the message your plot is conveying. Don’t just say "This is my X-axis, this is my Y-axis", but rather what’s the **so what** of the plot. Tell some sort of story and speculate about the differences in the patterns in no more than a paragraph.
+
+##Looking at the raw variables
+
+```{r}
+glimpse(listings)
+
+#Number of Airbnb listings in Malaga:
+nrow(listings)
+
+#Number of variables available in the Airbnb dataset:
+ncol(listings)
+
+sum(sapply(listings, is.numeric))
+sum(sapply(listings, is.character))
+sum(sapply(listings, is.logical))
+sum(sapply(listings, is.Date))
+
+
+
+
+```
+
+
+## Data wrangling
+
+Once you load the data, it's always a good idea to use `tibble::glimpse()` to see what kind of variables you have and what data type (`chr`, `num`, `logical`, `date`, etc) they are. Also, use `skimr::skim()` to get quick summary statistics of variables.
+
+Notice that some of the price data (`price`, `cleaning_fee`, `extra_people`) is given as a character string, e.g., "$109.00"
+
+Since `price` is a quantitative variable, we need to make sure it is stored as numeric data `num` in the dataframe. To do so, we will first use `tidyr::extract()` to create a column of prices that don’t have the dollar sign. Then, we will use the `as.numeric()` function to turn the extracted price data from a character to a number. For more information about the [extract function you can click here](https://tidyr.tidyverse.org/reference/extract.html){target="_blank"}.
+
+```
+listings <- listings %>% 
+  extract(price, "price") %>%
+  mutate(price = as.numeric(price))
+```
+  
+Use `typeof(listing$price)` to confirm that `price` is now stored as a number.
+
+```{r clean_price_data, echo=FALSE}
+
+listings <- listings %>% 
+  extract(price, "price") %>%
+  extract(cleaning_fee, "cleaning_fee") %>%
+  extract(extra_people, "extra_people") %>%
+  extract(weekly_price, "weekly_price") %>%
+  extract(monthly_price, "monthly_price") %>%
+  extract(security_deposit, "security_deposit") %>%
+  mutate(price = as.numeric(price),
+         cleaning_fee = as.numeric(cleaning_fee),
+         extra_people = as.numeric(extra_people),
+         weekly_price = as.numeric(weekly_price),
+         monthly_price = as.numeric(monthly_price),
+         security_deposit = as.numeric(security_deposit)
+         )
+
+```
+
+
+## Handling missing values (NAs)
+
+Use `skimr::skim()` function to view a summary of the `cleaning_fee` data. This is also stored as a character, so you have to turn it into a number, as discussed earlier. 
+
+- How many observations have missing values for `cleaning_fee`? 
+- What do you think is the most likely reason for the missing observations of `cleaning_fee`? In other words, what does a missing value of `cleaning_fee` indicate?
+
+`cleaning_fee` an example of data that is missing not at random, since there is a specific pattern/explanation to the missing data. 
+
+Fill in the code below to impute the missing values of `cleaning_fee` with an appropriate numeric value. Then use `skimr::skim()` function to confirm that there are no longer any missing values of `cleaning_fee`.
+
+```
+listings <- listings %>%
+  mutate(cleaning_fee = case_when(
+    is.na(cleaning_fee) ~ ______, 
+    TRUE ~ cleaning_fee
+  ))
+```
+```{r}
+
+listings <- listings %>%
+  mutate(cleaning_fee = case_when(
+    is.na(cleaning_fee) ~ 0, 
+    TRUE ~ cleaning_fee
+  ),
+  weekly_price = case_when(
+    is.na(weekly_price) ~ price*7,
+    TRUE ~ weekly_price
+  ),
+  monthly_price = case_when(
+    is.na(monthly_price) ~ price*30,
+    TRUE ~ monthly_price
+  ),
+  security_deposit = case_when(
+    is.na(security_deposit) ~ 0,
+    TRUE ~ security_deposit
+  ))
+
+```
+
+Next, we look at the variable `property_type`. We can use the `count` function to determine how many categories there are their frequency. What are the top 4 most common property types? What proportion of the total listings do they make up? 
+
+Since the vast majority of the observations in the data are one of the top four or five property types, we would like to create a simplified version of `property_type` variable that has 5 categories: the top four categories and `Other`. Fill in the code below to create `prop_type_simplified`.
+
+```
+listings <- listings %>%
+  mutate(prop_type_simplified = case_when(
+    property_type %in% c("Apartment","______", "______","______") ~ property_type, 
+    TRUE ~ "Other"
+  ))
+  
+```
+
+```{r}
+
+listings %>%
+  group_by(property_type) %>%
+  summarise(number = count(property_type)) %>%
+  arrange(desc(number))
+
+listings <- listings %>%
+  mutate(prop_type_simplified = case_when(
+    property_type %in% c("Apartment","House", "Loft","Condominium") ~ property_type, 
+    TRUE ~ "Other"
+  ))
+
+listings
+
+listings %>%
+  count(property_type, prop_type_simplified) %>%
+  arrange(desc(n))  
+
+listings
+
+
+```
+
+Use the code below to check that `prop_type_simplified` was correctly made.
+
+```
+listings %>%
+  count(property_type, prop_type_simplified) %>%
+  arrange(desc(n))        
+```        
+
+Airbnb is most commonly used for travel purposes, i.e., as an alternative to traditional hotels. We only want to include  listings in our regression analysis that are intended for travel purposes:
+
+- What are the 5 most common values for the variable `minimum_nights`? 
+- Which value in the top 5 stands out? 
+- What is the likely intended purpose for Airbnb listings with this seemingly unusual value for `minimum_nights`?
+
+Filter the airbnb data so that it only includes observations with `minimum_nights <= 4`
+
+```{r}
+
+listings %>%
+  group_by(minimum_nights) %>%
+  summarise(number=count(minimum_nights))%>%
+  arrange(desc(number))
+
+```
+
+```{r, echo=FALSE, message= FALSE, warning=FALSE}
+listings_new <- listings %>%
+  filter(minimum_nights<=4)
+
+listings_new %>%
+  summarise(average=mean(price), median = median(price))
+
+favstats(~price, data=listings)
+
+# favstats(price~neighbourhood_cleansed, data=listings_new)%>%
+#    arrange(desc(mean))
+
+
+qt_legend <- favstats(price~neighbourhood_cleansed, data=listings_new)%>%
+  arrange(desc(mean))
+
+listings_2 <- left_join(qt_legend, listings_new)%>%
+  filter(price>=(Q1-1.5*(Q3-Q1)) & price<=(Q3+1.5*(Q3-Q1)))
+
+listings_2
+
+# favstats(price~neighbourhood_cleansed, data=listings_2)%>%
+#   arrange(desc(mean))
+  
+   #listings_2 <- listings_new %>%
+   #filter (entry[price] >= qt_legend[entry[neighbourhood_cleansed]][Q1] && entry[price] <= qt_legend[entry[neighbourhood_cleansed]][Q3])
+#}
+
+
+ggplot(listings_new, aes(x=price, y=neighbourhood_cleansed, color=neighbourhood_cleansed)) +
+  geom_boxploth()+
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Price/ night")+
+  ylab("Neighbourhood")
+
+ggplot(listings_2, aes(x=price, y=neighbourhood_cleansed, color=neighbourhood_cleansed)) +
+  geom_boxploth()+
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Price/ night")+
+  ylab("Neighbourhood")
+  
+
+# ggplot(listings_2, aes(x=price, y=neighbourhood_cleansed, color=neighbourhood_cleansed)) +
+#   geom_boxploth()+
+#   theme_minimal() +
+#   theme(legend.position = "none") +
+#   xlab("Price/ night")+
+#   ylab("Neighbourhood")
+
+
+listings_new %>% 
+  select("price", "accommodates", "bedrooms", "square_feet", "review_scores_value") %>% 
+  GGally::ggpairs() + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 90, size=8),
+        axis.title.x = element_blank(), 
+        axis.text.y = element_text(size = 8))
+
+listings_new %>%
+  group_by(price) %>%
+  arrange(price)
+
+
+#install.packages(data.table)
+#library(data.table)
+#outlierReplace = function(dataframe, cols, rows, newValue = NA) {
+#    if (any(rows)) {
+#        set(dataframe, rows, cols, newValue)
+#    }
+# }
+# 
+# outlierReplace(listings_new, "price", nrow(listings_new$price))
+# 
+# listings_new$price <- listings_new$price[which(listings_new$price %in% boxplot.stats(listings_new$price)$out)]
+
+  
+```
+
+        
+# Mapping 
+
+Visualisations of feature distributions and their relations are key to understanding a data set, and they can open up new lines of exploration. While we do not have time to go into all the wonderful geospatial visualisations one can do with R with the `sf` package, you can use the following code to start with a map of your city, and overlay all AirBnB coordinates to get an overview of the spatial distribution of AirBnB rentals. For this visualisation we use the `leaflet` package, which includes a variety of tools for interactive maps, so you can easily zoom in-out, click on a point to get the actual AirBnB listing for that specific point, etc.
+
+The following code, having created a dataframe `listings` with all AirbnB listings in Amsterdam, will plot on the map all AirBnBs where `minimum_nights` is less than equal to four (4). You could learn more about `leaflet`, by following [the relevant Datacamp course on mapping with leaflet](https://www.datacamp.com/courses/interactive-maps-with-leaflet-in-r)
+
+
+```{r, out.width = '100%'}
+
+listings_2 <- listings_2 %>%
+  filter(bedrooms>0)%>%
+  mutate(price_bedrooms=(price/bedrooms))
+
+overall_mean <- mean(listings_2$price_bedrooms)
+overall_sd <- sd(listings_2$price_bedrooms)
+
+listings_2 <- listings_2 %>%
+  mutate(overall_mean=overall_mean, overall_sd=overall_sd)%>%
+  mutate(category=case_when(
+    price_bedrooms<(overall_mean-overall_sd) ~ "lower",
+    price_bedrooms>=(overall_mean-overall_sd) & price_bedrooms<=(overall_mean+overall_sd) ~ "equal",
+    price_bedrooms>(overall_mean+overall_sd) ~ "higher"
+  ))
+
+pal <- colorFactor(palette = c("red","blue","green"),
+levels = c("lower","equal","higher"))
+
+leaflet(data = filter(listings_2, minimum_nights <= 4)) %>%
+  addProviderTiles("OpenStreetMap.Mapnik") %>%
+  addLegend(pal = pal, 
+              values = c("lower", "equal", "higher"),
+              # opacity of .5, title of Sector, and position of topright
+              opacity = 0.5, title = "Price/nr bedrooms", position = "topright")%>%
+  addCircleMarkers(lng = ~longitude,
+                   lat = ~latitude,
+                   radius = 1,
+                   color = ~pal(category),
+                   fillOpacity = 0.4,
+                   popup = ~price,
+                   label = ~property_type) %>%
+  setView(lng = -4.4260,
+lat = 36.7167,
+zoom = 13) %>%
+  setMaxBounds(lng1 = -4.4260, lat1 = 36.7167,
+lng2 = -4.4260, lat2 = 36.7167) 
+
+```
+
+    
+# Regression Analysis
+
+For the target variable $Y$, we will use the cost to stay at an Airbnb location for four (4) nights. The plan is that you will leave straight after Sundowners on Thursday, and you will catch the first flight on Monday morning to head back to classes.
+
+Create a new variable called `price_4_nights` that uses `price`, `cleaning_fee`, `guests_included`, and `extra_people` to calculate the total cost for two people to stay at the Airbnb property for 4 nights. This is the variable $Y$ we want to explain.
+
+Use histograms or density plots to examine the distributions of `price_4_nights` and `log(price_4_nights)`. Which variable should you use for the regression model? Why?
+
+Fit a regression model called `model1` with the following explanatory variables: `prop_type_simplified`, `number_of_reviews`, and `review_scores_rating`. 
+
+- Interpret the coefficient `review_scores_rating` in terms of `price_4_nights`.
+- Interpret the coefficient of `prop_type_simplified` in terms of `price_4_nights`.
+
+
+```{r}
+
+listings_2 <- listings_2 %>%
+  mutate(price_4_nights = price * 4 + cleaning_fee + ifelse(guests_included < 2, 4*extra_people, 0))
+
+favstats(~price_4_nights, data=listings_2)
+
+Y <- listings_2 %>% pull(price_4_nights)
+
+
+d <- density(Y)
+log_d <- density(log(Y))
+
+hist(Y)
+plot(d)
+
+hist(log(Y))
+plot(log_d)
+
+glimpse(listings_2)
+
+```
+## Based on the above histograms and density plots, it may be observed that the price_4_nights variable forms a log-normal distribution. This could have also been deduced through the significant skewness, low mean value and large standard deviation (and of course, variance). Because of this, the the plots for the log(price_4_nights) show a normal distribution that would be a better candidate for further study as it would lead to more accurate results as opposed to a non-normal derivate.
+
+
+
+
+```{r}
+
+# adding the specific variable for the error
+listings_2 <- listings_2 %>% 
+  mutate(log_price_4_nights = log(price_4_nights))
+
+model1 = lm(log_price_4_nights~number_of_reviews + prop_type_simplified + review_scores_rating, data = listings_2) 
+
+model1%>%
+  get_regression_table()
+
+model1%>%
+    get_regression_summaries()
+
+plot(model1)
+
+```
+
+
+
+We want to determine if `room_type` is a significant predictor of the cost for 4 nights, given everything else in the model. Fit a regression model called model2 that includes all of the explanantory variables in `model1` plus `room_type`. 
+
+```{r}
+
+model2 <- lm(log_price_4_nights ~ prop_type_simplified + number_of_reviews + review_scores_rating+room_type, data = listings_2)
+model2 %>% 
+  get_regression_summaries()
+
+model2 %>% 
+  get_regression_table()
+
+autoplot(model2)+
+  theme_minimal()
+
+car::vif(model2)
+
+```
+
+## Further variables/questions to explore on our own
+
+Our dataset has many more variables, so here is some ideas on how you can extend your analysis
+
+1. Are the number of `bathrooms`, `bedrooms`, `beds`, or size of the house (`accomodates`) significant predictors of `price_4_nights`?
+1. Do superhosts `(host_is_superhost`) command a pricing premium, after controlling for other variables?
+1. Most owners advertise the exact location of their listing (`is_location_exact == TRUE`), while a non-trivial proportion don't. After controlling for other variables, is a listing's exact location a significant predictor of `price_4_nights`?
+1. For all cities, there are 3 variables that relate to neighbourhoods: `neighbourhood`, `neighbourhood_cleansed`, and `neighbourhood_group_cleansed`. There are typically more than 20 neighbourhoods in each city, and it wouldn't make sense to include them all in your model. Use your city knowledge, or ask someone with city knowledge, and see whether you can group neighbourhoods together so the majority of listings falls in fewer (5-6 max) geographical areas. You would thus need to create a new categorical variabale `neighbourhood_simplified` and determine whether location is a predictor of `price_4_nights`
+1. What is the effect of `cancellation_policy` on `price_4_nights`, after we control for other variables?
+
+```{r}
+
+#1. Are the number of `bathrooms`, `bedrooms`, `beds`, or size of the house (`accomodates`) significant predictors of `price_4_nights`?
+model3 = lm(log_price_4_nights~number_of_reviews + prop_type_simplified + review_scores_rating + bathrooms+bedrooms+beds+accommodates, data = listings_2) 
+
+model3%>%
+  get_regression_table()
+
+model3%>%
+    get_regression_summaries()
+
+autoplot(model3)
+car::vif(model3)
+
+#2.Do superhosts `(host_is_superhost`) command a pricing premium, after controlling for other variables?
+
+model4=lm(log_price_4_nights~host_is_superhost+number_of_reviews + prop_type_simplified + review_scores_rating + bathrooms+bedrooms+beds+accommodates+square_feet, data=listings_2)
+
+model4%>%
+  get_regression_table()
+
+model4%>%
+    get_regression_summaries()
+
+autoplot(model4)
+car::vif(model4)
+
+#remove variable review_scores_rating, as it has a vif>2
+model5=lm(log_price_4_nights~host_is_superhost+number_of_reviews + bathrooms+bedrooms+beds+accommodates+square_feet, data=listings_2)
+
+model5%>%
+  get_regression_table()
+
+model5%>%
+    get_regression_summaries()
+
+autoplot(model5)
+car::vif(model5)
+
+# 4. What is the effect of `cancellation_policy` on `price_4_nights`, after we control for other variables?
+model6=lm(log_price_4_nights~host_is_superhost+number_of_reviews + bathrooms+bedrooms+beds+accommodates+square_feet+cancellation_policy, data=listings_2)
+
+model6%>%
+  get_regression_table()
+
+model6%>%
+    get_regression_summaries()
+
+autoplot(model6)
+car::vif(model6)
+
+```
+
+
+## Diagnostics, collinearity, summary tables
+
+As you keep building your models, it makes sense to:
+
+1. Check the residuals, using `autoplot(model_x)`
+1. As you start building models with more explanatory variables, make sure you use `car::vif(model_x)`` to calculate the **Variance Inflation Factor (VIF)** for your predictors and determine whether you have colinear variables. As a rule of thumb, if  VIF > 10, your model does suffer from collinearity and you must remove the variable in question.
+1. Create a summary table, using `huxtable` that shows which models you worked on, which predictors are significant, the adjusted $R^2$, and the Residual Standard Error.
+1. Split your data in training and testing test, and report the RMSE for both.
+1. Finally, you must use the best model you came up with for prediction. Suppose you are planning to visit the city you have worked on and you want to stay in an Airbnb. Find all Airbnb listings that are apartments with a private room, has 10 reviews, and an average rating of at least 90. Use your best model to predict the total cost to stay at these Airbnb for 4 nights. Include the appropriate 95% interval with your prediction. Report the prediction and interval in terms of `price_4_nights`.
+
+```{r}
+
+huxtable::huxreg(model1, model2, model3, model4, model5, number_format = "%.2f") %>%
+  kable %>%
+  kable_styling (bootstrap_options = c(), 
+                 full_width = F, 
+                 fixed_thead = T) #DOES NOT LOOK AMAZING
+
+
+```
+
+
+```{r}
+
+library(ISLR) #for RMSE and training of model
+library(MASS) #for RMSE and training of model
+require(caTools) #for RMSE and training of model
+library(Metrics) #for RMSE and training of model
+#library(hydroGOF) #for RMSE and training of model
+
+
+listings_2 <- listings_2 %>%
+  filter(!is.na(log_price_4_nights))
+
+# divide in two the dataset
+sample_siz = floor(0.75*nrow(listings_2)) 
+#looking at sample size
+
+# generates random sample
+set.seed(123)  
+
+# identify rows 
+ind_train = sample(seq_len(nrow(listings_2)),size = sample_siz)  
+train =listings_2[ind_train,] 
+test=listings_2[-ind_train,] 
+
+# recreating the model based on the train dataset
+fit_rmse <- lm(log(price_4_nights) ~  host_is_superhost + number_of_reviews + bathrooms+bedrooms+beds+accommodates+square_feet ,data=train)
+
+# calculating error
+actuals <- predict(fit_rmse, train)
+predictions <- predict(fit_rmse, test)
+
+# rmse train
+rmse_train <- rmse(train$log_price_4_nights, actuals)
+knitr::kable(rmse_train, caption = "RMSE Train", escape = FALSE) %>% 
+  kable_styling(bootstrap_options = c("striped", "hover",  "responsive", full_width = F, fixed_thead = T)) 
+
+```
+
+```{r}
+# rmse test
+rmse_test <- rmse(test$log_price_4_nights, predictions)
+knitr::kable(rmse_test, caption = "RMSE Test", escape = FALSE) %>% 
+  kable_styling(bootstrap_options = c("striped", "hover",  "responsive", full_width = F, fixed_thead = T)) 
+```
+
+```{r}
+
+#Predictions
+
+# filtering the listings
+listings_2 <- listings_2 %>% 
+  filter(room_type == "Private room",  number_of_reviews == 10, review_scores_rating > 10)
+
+attach(listings_2)
+
+# building a new fit
+listings_lm <- lm(log_price_4_nights ~  neighbourhood_cleansed  + bedrooms + require_guest_profile_picture + host_is_superhost + availability_365  + cancellation_policy + bathrooms + review_scores_rating , data = listings_2)
+
+# building a table with predictions for all the possibilities
+new_table = data.frame(predict(listings_lm, listings_2, interval = "confidence")) 
+
+# calculating a final prediction based on the average
+new_average <- new_table %>%  
+  mutate(fit = exp(mean(fit)),
+         lwr = exp(mean(lwr)),
+         upr = exp(mean(upr))
+         )
+
+# deleting extra rows
+my_kable = function(x, max.rows=1, ...) {
+  kable(x[1:max.rows, ], ...)
+}
+
+
+# Final Table
+my_kable(new_average, caption="Prediction")
+
+```
+
+
+# Deliverables
+
+
+- By midnight on Sunday, 19 Jan 2020 (2020-01-20 23:59:59), you must upload on Canvas your final report. You will write your report using R Markdown to introduce, frame, and describe your story and findings. You should include the following in the memo:
+
+  - Executive summary
+  - Background information and summary of the data
+  - Explanation, description, and code for each individual plot  
+  - Summary of the process of analysis
+  - Rationale for the final model
+  - Significance and some diagnostics.
+  - RMSE calculations for training vs testing datasets
+  - Predictions
+
+Remember to follow R Markdown etiquette rules and style; don't have the Rmd output extraneous messages or warnings, include summary tables in nice tables (use `kableExtra`), and remove any placeholder texts from past Rmd templates.
+
+# An aside
+
+Most of you may have have used AirBnB services. In this exercise, as potential users, we wanted to predict the cost to spend 4 nights in an AirBnB. Interestingly, [AirBnB can score users to see whether they are suitable guests](https://www.standard.co.uk/tech/airbnb-software-scan-online-life-suitable-guest-a4325551.html). 
+
+Essentially, [AirBnB risk scores its potential users](https://www.airbnb.com/help/article/2356/what-does-it-mean-when-someones-id-has-been-checked?irgwc=1&irclid=TBhz%3AEzUXxyOR7DwUx0Mo3EUUknRKhQHryFs280&ircid=4273): 
+
+> Every Airbnb reservation is scored for risk before it’s confirmed. We use predictive analytics and machine learning to instantly evaluate hundreds of signals that help us flag and investigate suspicious activity before it happens.
+
+# Details
+
+- Who did you collaborate with: Alex Majewski, Filippo Maria Zanchi
+- Approximately how much time did you spend on this assignment: ANSWER HERE
+- What, if anything, gave you the most trouble: ANSWER HERE
+
+
+**Please seek out help when you need it,** and remember the [15-minute rule](http://telapps.london.edu/analytics_with_R/help.html#173_failure,_and_the_15_minute_rule). You know enough R (and have enough examples of code from class and your readings) to be able to do this. Your homework has to be turned in individually, and your work should be your own; i.e., if you work with others, acknowledge their contribution and don't turn in the same code/explanations. If you get stuck, ask for help from others, post a question on Slack-- and remember that I am here to help too!  
+
+> As a true test to yourself, do you understand the code you submitted and are you able to explain it to someone else? 
+
+
+> Please knit to HTML and upload your report to Canvas. You may discuss the questions with a classmate, but you MUST produce your own report. Blatant copying or reproduction of the same solution will result in a zero grade.
+
+
+# Acknowledgements
+
+- The data from this lab is from [insideairbnb.com](insideairbnb.com)
